@@ -79,10 +79,39 @@ def compute_return_rate(df: pd.DataFrame) -> pd.Series:
     return (cancelled_per_cust / total_per_cust).fillna(0).rename("return_rate")
 
 
+def flag_wholesale(df: pd.DataFrame, threshold: float = 1000) -> pd.Series:
+    """
+    Flags customers with wholesale-like buying patterns, based on average
+    quantity purchased per invoice. Threshold of 1000 was chosen because it
+    sits almost exactly at the 99th percentile of this metric across all
+    customers (measured: ~1043.5), marking a genuine behavioral break rather
+    than an arbitrary cutoff — the median customer orders ~132 units/invoice,
+    while flagged accounts order in the thousands to tens of thousands.
+    """
+    cust_qty = df.groupby("CustomerID").apply(
+        lambda g: g.Quantity.sum() / g.Invoice.nunique(), include_groups=False
+    )
+    return (cust_qty > threshold).rename("is_wholesale")
+
+
 if __name__ == "__main__":
     cleaned = load_and_clean("data/raw/online_retail_II.csv")
     return_rate = compute_return_rate(cleaned)
+    wholesale_flag = flag_wholesale(cleaned)
 
-    cleaned.to_csv("data/processed/cleaned_transactions.csv", index=False)
+    n_wholesale = wholesale_flag.sum()
+    wholesale_ids = wholesale_flag[wholesale_flag].index
+    print(f"\nFlagged {n_wholesale} wholesale-pattern customers "
+          f"({n_wholesale/cleaned.CustomerID.nunique()*100:.2f}% of customers)")
+
+    retail_df = cleaned[~cleaned.CustomerID.isin(wholesale_ids)].copy()
+    wholesale_df = cleaned[cleaned.CustomerID.isin(wholesale_ids)].copy()
+
+    retail_df.to_csv("data/processed/cleaned_transactions_retail.csv", index=False)
+    wholesale_df.to_csv("data/processed/cleaned_transactions_wholesale.csv", index=False)
     return_rate.to_csv("data/processed/customer_return_rate.csv")
-    print("\nSaved cleaned_transactions.csv and customer_return_rate.csv to data/processed/")
+
+    print(f"Retail dataset: {retail_df.shape}, {retail_df.CustomerID.nunique()} customers")
+    print(f"Wholesale dataset: {wholesale_df.shape}, {wholesale_df.CustomerID.nunique()} customers")
+    print("\nSaved cleaned_transactions_retail.csv, cleaned_transactions_wholesale.csv, "
+          "and customer_return_rate.csv to data/processed/")
