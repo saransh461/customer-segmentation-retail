@@ -8,7 +8,14 @@ Decisions made (documented for reproducibility):
 2. Drop exact duplicate rows — known artifact of this dataset (double-logged entries).
 3. Drop zero/negative price rows — small residual of manual adjustments/test
    products with no real transactional meaning (~70 rows).
-4. Cancellations (Invoice starting with 'C') are KEPT, not dropped:
+4. Drop non-product StockCodes (POST, DOT, M, C2, D, ADJUST, ADJUST2,
+   BANK CHARGES, CRUK, TEST001, TEST002) — these are postage, fees, discounts,
+   and manual adjustments logged in the same table as real products, and would
+   distort Monetary/product-level analysis if left in (~3,641 rows, ~19% of
+   customers affected). Note: codes like 15056BL, 79323LP, PADS, SP1002 look
+   non-standard but ARE real products — confirmed via Description before
+   excluding anything, rather than relying on a blanket regex.
+5. Cancellations (Invoice starting with 'C') are KEPT, not dropped:
    - Their negative Quantity/LineTotal naturally nets out of a customer's total
      Monetary value when aggregated, giving true net spend.
    - A `return_rate` feature (cancelled invoices / total invoices) is engineered
@@ -41,6 +48,18 @@ def load_and_clean(filepath: str) -> pd.DataFrame:
     junk = df[df.Price <= 0]
     print(f"Dropped {len(junk)} zero/negative price rows (manual adjustments, test entries)")
     df = df[df.Price > 0].copy()
+
+    # --- Drop non-product StockCodes (postage, fees, discounts, manual adjustments) ---
+    # Confirmed via Description that these specific codes are non-product entries;
+    # similar-looking codes (e.g. 15056BL, 79323LP, PADS) were checked and kept
+    # since they are real products with non-standard code formats.
+    non_product_codes = [
+        "POST", "DOT", "M", "C2", "D", "ADJUST", "ADJUST2",
+        "BANK CHARGES", "CRUK", "TEST001", "TEST002",
+    ]
+    non_product_rows = df.StockCode.isin(non_product_codes)
+    print(f"Dropped {non_product_rows.sum()} non-product rows (postage/fees/discounts/adjustments)")
+    df = df[~non_product_rows].copy()
 
     # --- Flag cancellations, compute line-level net revenue ---
     df["is_cancellation"] = df.Invoice.astype(str).str.startswith("C")
