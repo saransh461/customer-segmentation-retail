@@ -20,6 +20,16 @@ Decisions made (documented for reproducibility):
      Monetary value when aggregated, giving true net spend.
    - A `return_rate` feature (cancelled invoices / total invoices) is engineered
      per customer as a churn-model signal.
+6. Wholesale-pattern customers (avg quantity/invoice > 1000, ~99th percentile)
+   are flagged and split into a separate dataset — their bulk-buying behavior
+   and business relationship differs fundamentally from individual consumers,
+   and would distort RFM/CLV scoring if mixed in (68 customers, ~17% of revenue).
+7. Customers with negative net total spend (28 customers, 0.48%) are excluded
+   from the retail pipeline. These are cases where a cancellation exists with
+   no matching original purchase in the dataset window (likely purchased
+   before Dec 2009, outside the data's start date) — an artifact of the data
+   window's edges, not genuine "over-returning" behavior. Negative Monetary
+   values would also break percentile-based RFM scoring and CLV formulas.
 """
 
 import pandas as pd
@@ -94,24 +104,44 @@ def flag_wholesale(df: pd.DataFrame, threshold: float = 1000) -> pd.Series:
     return (cust_qty > threshold).rename("is_wholesale")
 
 
+def flag_negative_spend(df: pd.DataFrame) -> pd.Series:
+    """
+    Flags customers whose net total spend (sum of LineTotal) is negative —
+    i.e. a cancellation exists with no matching original purchase inside the
+    dataset window. This is a data-window edge artifact, not genuine
+    over-returning behavior, and would break percentile-based RFM/CLV scoring
+    if left in. Affects ~0.5% of customers.
+    """
+    total_spend = df.groupby("CustomerID").LineTotal.sum()
+    return (total_spend < 0).rename("is_negative_spend")
+
+
 if __name__ == "__main__":
     cleaned = load_and_clean("data/raw/online_retail_II.csv")
     return_rate = compute_return_rate(cleaned)
     wholesale_flag = flag_wholesale(cleaned)
+    negative_spend_flag = flag_negative_spend(cleaned)
 
     n_wholesale = wholesale_flag.sum()
     wholesale_ids = wholesale_flag[wholesale_flag].index
+    n_negative = negative_spend_flag.sum()
+    negative_ids = negative_spend_flag[negative_spend_flag].index
+
     print(f"\nFlagged {n_wholesale} wholesale-pattern customers "
           f"({n_wholesale/cleaned.CustomerID.nunique()*100:.2f}% of customers)")
+    print(f"Flagged {n_negative} negative-net-spend customers "
+          f"({n_negative/cleaned.CustomerID.nunique()*100:.2f}% of customers)")
 
-    retail_df = cleaned[~cleaned.CustomerID.isin(wholesale_ids)].copy()
+    exclude_ids = set(wholesale_ids) | set(negative_ids)
+
+    retail_df = cleaned[~cleaned.CustomerID.isin(exclude_ids)].copy()
     wholesale_df = cleaned[cleaned.CustomerID.isin(wholesale_ids)].copy()
 
     retail_df.to_csv("data/processed/cleaned_transactions_retail.csv", index=False)
     wholesale_df.to_csv("data/processed/cleaned_transactions_wholesale.csv", index=False)
     return_rate.to_csv("data/processed/customer_return_rate.csv")
 
-    print(f"Retail dataset: {retail_df.shape}, {retail_df.CustomerID.nunique()} customers")
+    print(f"\nRetail dataset: {retail_df.shape}, {retail_df.CustomerID.nunique()} customers")
     print(f"Wholesale dataset: {wholesale_df.shape}, {wholesale_df.CustomerID.nunique()} customers")
     print("\nSaved cleaned_transactions_retail.csv, cleaned_transactions_wholesale.csv, "
           "and customer_return_rate.csv to data/processed/")
