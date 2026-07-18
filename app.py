@@ -1,45 +1,42 @@
 """
 Lightweight Streamlit dashboard for the customer segmentation project.
 
-Structure (4 simple sections, no heavy custom UI):
-1. Overview - dataset summary
-2. Segment Explorer - RFM segment distribution
-3. Customer Lookup - look up any customer's segment/risk/value/action
-4. Business Insights - the Risk x Value action matrix (the project's payoff)
+Design change from the first version: this app now reads from small,
+PRE-COMPUTED artifacts (segment_risk_value_matrix.csv, monthly_revenue.csv,
+dashboard_summary.json — all under 1MB combined) instead of the full
+794,183-row transaction table (77MB) and instead of retraining XGBoost on
+every app startup.
 
-Design choice: this app calls the existing pipeline functions directly
-(compute_rfm, compute_clv, build_segment_risk_value_table) rather than
-duplicating logic, so the dashboard and the underlying analysis never
-drift out of sync. Everything is wrapped in st.cache_data / st.cache_resource
-so the (somewhat expensive) XGBoost training only happens once per session,
-not on every interaction.
+Why: the full transaction file is too large to comfortably commit to GitHub
+(same reasoning as excluding the raw 95MB dataset earlier), and Streamlit
+Cloud only has access to what's actually in the repo. Precomputing the
+customer-level outputs once (via the existing pipeline scripts) and shipping
+just those small results is both a deployment fix AND better practice in
+general — the deployed app doesn't need to redo expensive model training on
+every cold start just to display results that don't change between runs.
+
+To regenerate these artifacts after any pipeline change, run:
+    python3 src/segment_risk_value.py
+    python3 src/build_dashboard_artifacts.py
 """
 
-import sys
-sys.path.insert(0, "src")
-
+import json
 import pandas as pd
 import streamlit as st
-
-from rfm_analysis import compute_rfm
-from clv_estimation import compute_clv
-from segment_risk_value import build_segment_risk_value_table
 
 st.set_page_config(page_title="Customer Segmentation Dashboard", layout="wide")
 
 
 @st.cache_data
-def load_raw_data():
-    return pd.read_csv("data/processed/cleaned_transactions_retail.csv", parse_dates=["InvoiceDate"])
+def load_data():
+    table = pd.read_csv("data/processed/segment_risk_value_matrix.csv", index_col="CustomerID")
+    monthly_revenue = pd.read_csv("data/processed/monthly_revenue.csv", index_col="InvoiceDate", parse_dates=True)
+    with open("data/processed/dashboard_summary.json") as f:
+        summary = json.load(f)
+    return table, monthly_revenue, summary
 
 
-@st.cache_data
-def load_full_table(_df):
-    return build_segment_risk_value_table(_df)
-
-
-df = load_raw_data()
-table = load_full_table(df)
+table, monthly_revenue, summary = load_data()
 
 st.title("Customer Segmentation, Churn Risk & CLV Dashboard")
 st.caption("Online Retail II dataset (Dec 2009 - Dec 2011) — retail customers only, wholesale accounts analyzed separately")
@@ -52,10 +49,10 @@ tab1, tab2, tab3, tab4 = st.tabs(
 with tab1:
     st.subheader("Dataset Summary")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Customers", f"{df.CustomerID.nunique():,}")
-    col2.metric("Transactions", f"{df.Invoice.nunique():,}")
-    col3.metric("Total Revenue", f"£{df.LineTotal.sum():,.0f}")
-    col4.metric("Date Range", "2 years")
+    col1.metric("Customers", f"{summary['n_customers']:,}")
+    col2.metric("Transactions", f"{summary['n_transactions']:,}")
+    col3.metric("Total Revenue", f"£{summary['total_revenue']:,.0f}")
+    col4.metric("Date Range", summary['date_range'])
 
     st.markdown("""
     **Key data quality decisions made during cleaning:**
@@ -66,8 +63,7 @@ with tab1:
     """)
 
     st.subheader("Monthly Revenue Trend")
-    monthly = df.set_index("InvoiceDate").resample("ME")["LineTotal"].sum()
-    st.line_chart(monthly)
+    st.line_chart(monthly_revenue["LineTotal"])
 
 # --- TAB 2: SEGMENT EXPLORER ---
 with tab2:

@@ -1,6 +1,8 @@
 venv/
 data/raw/*.csv
 data/processed/*.csv
+!data/processed/segment_risk_value_matrix.csv
+!data/processed/monthly_revenue.csv
 .ipynb_checkpoints/
 __pycache__/
 *.pyc
